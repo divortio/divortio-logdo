@@ -1,0 +1,36 @@
+# wrangler.toml
+# Configuration for the Cloudflare Logging Worker.
+# Compatibility: August 2025
+name = "divortio-worker-d1-logger"
+main = "src/worker.mjs"
+compatibility_date = "2025-08-21"
+
+minify = true
+workers_dev = false
+preview_urls = false
+
+[placement]
+mode = "smart"
+
+[observability]
+enabled = true
+head_sampling = 1.0
+
+n# The Durable Object class used for batching logs.
+# This must be exported from your main module (src/worker.mjs).
+[[durable_objects.bindings]]
+name = "LOG_BATCHER"
+class_name = "LogBatcher"
+
+# D1 Database binding for storing logs.
+[[d1_databases]]
+binding = "LOGGING_DB"
+database_name = "production-logs"
+database_id = "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx" # <-- Replace with your actual D1 Database ID
+
+# --- Automatic Database Migrations ---
+# This tells Wrangler to automatically apply the SQL files found in the specified directory.
+[[d1_migrations]]
+tag = "v1"
+database = "production-logs"
+migrations_dir = "db/migrations"
