@@ -97,7 +97,7 @@ This project is designed to be deployed directly from your GitHub repository usi
 
 ### Step 1: Fork the Repository
 
-First, ensure you have forked this repository (`https://github.com/divortio/divortio-worker-d1-logger`) to your own
+First, ensure you have forked this repository (`https://github.com/divortio/divortio-logdo`) to your own
 GitHub account.
 
 ### Step 2: Create the D1 Database
@@ -112,7 +112,7 @@ GitHub account.
 2. Select the **Connect to Git** option.
 3. Choose your forked repository and click **Begin setup**.
 4. Cloudflare will detect the `wrangler.toml` file.
-    * **Project Name**: `divortio-worker-d1-logger` (or as desired).
+    * **Project Name**: `divortio-logdo` (or as desired).
     * **Production Branch**: `main`.
 5. Navigate to the **Variables** section to add your D1 database binding:
     * Click **Add binding**.
@@ -172,7 +172,7 @@ To use the logger from another worker:
    ```toml
    [[services]]
    binding = "LOGGER"
-   service = "divortio-worker-d1-logger" # The name of this logging worker
+   service = "divortio-logdo" # The name of this logging worker
    ```
 2. In your other worker's code, you can now call the logger.
 

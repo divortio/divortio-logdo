@@ -1,7 +1,7 @@
 # wrangler.toml
 # Configuration for the Cloudflare Logging Worker.
 # Compatibility: August 2025
-name = "divortio-worker-d1-logger"
+name = "divortio-logdo"
 main = "src/worker.mjs"
 compatibility_date = "2025-08-21"
 
