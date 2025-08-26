@@ -1,7 +1,7 @@
 {
   "name": "divortio-logdo",
   "version": "1.0.0",
-  "description": "Zero latency logging to Cloudflare D1 from Workers & Durable Objects",
+  "description": "Zero latency logging to Cloudflare D1 using Workers & Durable Objects",
   "private": true,
   "scripts": {
     "dev": "wrangler dev",
@@ -12,5 +12,14 @@
   "devDependencies": {
     "@cloudflare/workers-types": "^4.20240725.0",
     "wrangler": "^4.31.0"
-  }
+  },
+  "main": "./src/worker.mjs",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/divortio/divortio-logdo.git"
+  },
+  "bugs": {
+    "url": "https://github.com/divortio/divortio-logdo/issues"
+  },
+  "homepage": "https://github.com/divortio/divortio-logdo#readme"
 }
