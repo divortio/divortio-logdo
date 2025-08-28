@@ -2,111 +2,96 @@
  * @file src/logger.mjs
  * @description This module is the core of the logging system. It handles the creation of
  * detailed, structured log objects from incoming requests and forwards them to a
- * Durable Object for batch processing and storage. It is designed to be highly
- * resilient, with fallbacks for data enrichment.
+ * Durable Object for batch processing and storage.
  * @module logger
  */
 
 import {pushID} from './lib/pushID/pushID.js';
-import {createBrowserFingerprint} from './lib/fingerprint.js';
 import {crc32} from './lib/crc32.js';
 
-// --- Helper Functions for Data Extraction ---
-
 /**
- * A robust getter function that prioritizes a value from the Cloudflare `cf` object,
- * falls back to a corresponding request header, and returns null if neither is available.
- * This ensures that the most reliable data source is always used.
+ * Parses the 'cookie' header from a request into a key-value object.
+ *
  * @private
- * @param {object} cf - The Cloudflare `cf` object from the request.
- * @param {Headers} headers - The map of lowercased request headers.
- * @param {string} cfKey - The key for the desired property on the `cf` object (e.g., 'tlsCipher').
- * @param {string|null} headerKey - The key for the fallback header (e.g., 'x-cf-tls-cipher').
- * @param {string} [nestedCfKey=null] - An optional nested key for accessing properties within objects like `botManagement`.
- * @returns {string|boolean|number|null} The found value, or null if the value is not present or is an empty string.
+ * @param {Request} request The incoming request object.
+ * @returns {Object<string, string>} A key-value map of the parsed cookies.
  */
-function getValue(cf, headers, cfKey, headerKey, nestedCfKey = null) {
-    let cfValue = nestedCfKey ? cf[nestedCfKey]?.[cfKey] : cf[cfKey];
-    if (cfValue !== undefined && cfValue !== null && cfValue !== '') {
-        return cfValue;
-    }
-    return headers[headerKey] || null;
-}
-
-/**
- * Extracts and organizes all relevant data points from the Cloudflare 'cf' object and request headers.
- * It builds a comprehensive source object that includes derived fingerprints and identifiers,
- * with built-in fallbacks to ensure data is captured even if Transform Rules are not active.
- * @private
- * @param {Request} request - The incoming request object.
- * @param {Headers} headers - A key-value map of lowercased request headers.
- * @returns {object} A structured object containing all extracted and derived data points for logging.
- */
-function extractLogDataSources(request, headers) {
-    const cf = request.cf || {};
-    const url = new URL(request.url);
-    const userAgent = headers['user-agent'] || '';
-    const clientIp = getValue(cf, headers, 'clientIp', 'x-cf-client-ip') || headers['cf-connecting-ip'] || null;
-
-    // --- Core Identifiers ---
-    const ja3Hash = getValue(cf, headers, 'ja3Hash', 'x-cf-ja3-hash', 'botManagement');
-    const tlsCipher = getValue(cf, headers, 'tlsCipher', null);
-    const tlsClientRandom = getValue(cf, headers, 'tlsClientRandom', null);
-    const httpProtocol = getValue(cf, headers, 'httpProtocol', null);
-    const colo = getValue(cf, headers, 'colo', 'x-cf-colo');
-    const metalId = headers['x-cf-metal-id'] || null;
-
-    // --- Fingerprints & Hashes (derived from core identifiers) ---
-    const tlsHash = headers['x-cf-tls-hash'] || String(crc32((ja3Hash || '') + (tlsCipher || '') + (tlsClientRandom || '')));
-    const deviceHash = headers['x-cf-device-hash'] || String(crc32(userAgent + (ja3Hash || '') + (tlsCipher || '')));
-    const sessionHash = headers['x-cf-session-hash'] || String(crc32((clientIp || '') + userAgent + (ja3Hash || '') + (tlsCipher || '')));
-    const serverId = headers['x-cf-server-id'] || (colo && metalId ? colo + metalId : null);
-
-    // --- Geographic, URL & Other Data ---
-    const geoId = headers['x-cf-geo-id'] || (cf.continent && cf.country ? `${cf.continent}-${cf.country}-${cf.regionCode}-${cf.city}-${cf.postalCode}` : null);
-    const urlDomain = headers['x-url-domain'] || url.hostname;
-    const urlPath = headers['x-url-path'] || url.pathname;
-    const urlQuery = headers['x-url-query'] || url.search;
-    const threatScore = getValue(cf, headers, 'threatScore', 'x-cf-threat-score');
-    const verifiedBot = getValue(cf, headers, 'verifiedBot', 'x-cf-verified-bot', 'botManagement');
-    const zoneName = getValue(cf, headers, 'zoneName', 'x-cf-zone-name');
-    const deviceType = getValue(cf, headers, 'deviceType', 'x-device-type');
-
-    return {
-        cf, headers, url, clientIp, ja3Hash, tlsCipher, tlsHash, deviceHash,
-        sessionHash, serverId, geoId, urlDomain, urlPath, urlQuery, httpProtocol,
-        threatScore: threatScore ? parseInt(String(threatScore), 10) : null,
-        verifiedBot: verifiedBot !== null ? (String(verifiedBot).toLowerCase() === 'true') : null,
-        zoneName, deviceType
-    };
-}
-
-/**
- * Parses the 'cookie' header into a key-value object.
- * @private
- * @param {Headers} headers - A key-value map of lowercased request headers.
- * @returns {Object<string, string>} An object containing the parsed cookies.
- */
-function parseCookies(headers) {
+function parseCookies(request) {
+    const cookieHeader = request.headers.get('cookie');
+    if (!cookieHeader) return {};
     const cookies = {};
-    if (headers['cookie']) {
-        headers['cookie'].split(';').forEach(c => {
-            const [key, ...value] = c.split('=');
-            if (key) cookies[key.trim()] = value.join('=').trim();
-        });
-    }
+    cookieHeader.split(';').forEach(c => {
+        const [key, ...value] = c.split('=');
+        if (key) cookies[key.trim()] = value.join('=').trim();
+    });
     return cookies;
 }
 
 /**
- * Extracts the request body as a string, respecting a maximum size limit.
+ * Determines the client's device type ('mobile', 'tablet', 'desktop') based on the User-Agent string.
+ *
  * @private
- * @param {Request} request - The incoming request object.
- * @returns {Promise<{body: string|null, bodyBytes: number, bodyTruncated: boolean}>} An object containing the body, its size, and truncation status.
+ * @param {string | null} userAgent The User-Agent header string from the request.
+ * @returns {string | null} The determined device type or null if the User-Agent is not present.
  */
-async function extractBody(request) {
+function getDeviceType(userAgent) {
+    if (!userAgent) return null;
+    const ua = userAgent.toLowerCase();
+    if (ua.includes('mobile') || ua.match(/(?:phone|windows\s+phone|ipod|blackberry|(?:android|bb\d+|meego|silk|googlebot).+?mobile|palm|windows\s+ce|opera\smini|avantgo|mobilesafari|docomo|kaios)/)) {
+        return 'mobile';
+    }
+    if (ua.includes('tablet') || ua.match(/(?:ipad|playbook|(?:android|bb\d+|meego|silk)(?!.+?mobile))/)) {
+        return 'tablet';
+    }
+    return 'desktop';
+}
+
+/**
+ * Extracts, derives, and organizes all relevant data points from the request and Cloudflare properties.
+ * This function is responsible for creating various hashes and identifiers for analytics.
+ *
+ * @private
+ * @param {Request} request The incoming request object.
+ * @returns {object} A structured object containing all extracted and derived data points.
+ */
+function extractLogDataSources(request) {
+    const cf = request.cf || {};
+    const url = new URL(request.url);
+    const userAgent = request.headers.get('user-agent') || '';
+    const clientIp = request.headers.get('x-real-ip') || request.headers.get('cf-connecting-ip');
+
+    const ja3Hash = cf.botManagement?.ja3Hash || null;
+    const tlsCipher = cf.tlsCipher || null;
+    const tlsClientRandom = cf.tlsClientRandom || null;
+    const cookies = parseCookies(request);
+
+    const tlsHash = String(crc32((ja3Hash || '') + (tlsCipher || '') + (tlsClientRandom || '')));
+    const deviceHash = String(crc32(userAgent + (ja3Hash || '') + (tlsCipher || '')));
+    const connectionHash = String(crc32((clientIp || '') + userAgent + (ja3Hash || '') + (tlsCipher || '')));
+    const fpID = cookies['_ss_fpID'] || null;
+    const geoId = [cf.continent, cf.country, cf.regionCode, cf.city, cf.postalCode].filter(Boolean).join('-') || null;
+
+    const longHash = String(crc32(connectionHash));
+    const sample10 = parseInt(longHash.slice(-1), 10);
+    const sample100 = parseInt(longHash.slice(-2), 10);
+
+    return {
+        cf, url, clientIp, fpID, deviceHash, connectionHash, tlsHash,
+        geoId, cookies, sample10, sample100, clientDeviceType: getDeviceType(userAgent),
+    };
+}
+
+/**
+ * Safely extracts the request body as a string, respecting a configurable maximum size limit.
+ *
+ * @private
+ * @param {Request} request The incoming request object.
+ * @param {object} env The worker's environment bindings, containing MAX_BODY_SIZE.
+ * @returns {Promise<{body: string|null, bodyBytes: number, bodyTruncated: boolean}>} An object with the body, its size, and truncation status.
+ */
+async function extractBody(request, env) {
     let body = null, bodyBytes = 0, bodyTruncated = false;
-    const MAX_BODY_SIZE = 10240;
+    const MAX_BODY_SIZE = env.MAX_BODY_SIZE || 10240;
     if (request.method !== 'GET' && request.method !== 'HEAD' && request.body) {
         const rawBody = await request.clone().text();
         if (rawBody) {
@@ -118,16 +103,14 @@ async function extractBody(request) {
     return {body, bodyBytes, bodyTruncated};
 }
 
-// --- Public API ---
-
 /**
- * The primary "fire-and-forget" logging function exposed by the service.
- * It orchestrates the log creation and forwarding process in a non-blocking way
- * by using `ctx.waitUntil`.
- * @param {Request} request - The incoming request to be logged.
- * @param {object} [customData] - Optional, arbitrary JSON-serializable data to be included in the log.
- * @param {object} env - The Worker's environment bindings.
- * @param {ExecutionContext} ctx - The execution context of the request.
+ * The primary "fire-and-forget" logging function. It orchestrates the log creation
+ * and forwarding process in a non-blocking way using `ctx.waitUntil`.
+ *
+ * @param {Request} request The incoming request to be logged.
+ * @param {object} [customData] Optional, arbitrary JSON-serializable data to be included in the log.
+ * @param {object} env The Worker's environment bindings.
+ * @param {ExecutionContext} ctx The execution context of the request.
  */
 export function logRequest(request, customData, env, ctx) {
     ctx.waitUntil(doLog(request, customData, env));
@@ -136,33 +119,26 @@ export function logRequest(request, customData, env, ctx) {
 /**
  * An internal async function that performs the core logging logic: creating the log data
  * and sending it to the appropriate Durable Object shard.
+ *
  * @private
- * @param {Request} request - The incoming request.
- * @param {object} [customData] - Optional custom data.
- * @param {object} env - The Worker's environment bindings.
+ * @param {Request} request The incoming request.
+ * @param {object} [customData] Optional custom data.
+ * @param {object} env The Worker's environment bindings.
  * @returns {Promise<void>}
  */
 async function doLog(request, customData, env) {
     try {
         const logData = await createLogData(request, customData, env);
-        const colo = logData.cfColo;
-        const serverId = logData.serverId;
-        const timeBucket = Math.floor(Date.now() / (1000 * 60)); // 1-minute bucket for sharding
-
-        let shardId = serverId
-            ? `${colo}-${serverId}-${timeBucket}`
-            : `${colo || 'UNKNOWN'}-${timeBucket}`;
-
+        const colo = logData.cfColo || 'UNKNOWN';
+        const timeBucket = Math.floor(Date.now() / (1000 * 60));
+        const shardId = `${colo}-${timeBucket}`;
         const doId = env.LOG_BATCHER.idFromName(shardId);
         const stub = env.LOG_BATCHER.get(doId);
-
-        // Fire-and-forget the fetch call to the Durable Object.
         stub.fetch("https://logger/log", {
             method: "POST",
             headers: {"Content-Type": "application/json"},
             body: JSON.stringify(logData),
         });
-
     } catch (e) {
         console.error("[LOGGING] Fatal error in doLog:", e);
     }
@@ -171,26 +147,16 @@ async function doLog(request, customData, env) {
 /**
  * Gathers all data from the request, environment, and derived sources into a single,
  * structured log object ready for storage. This is the main data assembly function.
- * @param {Request} request - The incoming request.
- * @param {object} [customData] - Optional custom data.
- * @param {object} env - The Worker's environment bindings.
+ *
+ * @param {Request} request The incoming request.
+ * @param {object} [customData] Optional custom data.
+ * @param {object} env The Worker's environment bindings.
  * @returns {Promise<object>} A promise that resolves with the complete log data object.
  */
 export async function createLogData(request, customData, env) {
     const workerStartTime = Date.now();
-
-    const headers = {};
-    for (const [key, value] of request.headers.entries()) {
-        headers[key.toLowerCase()] = value;
-    }
-
-    // --- 1. Extract all data from primary sources and fallbacks ---
-    const sources = extractLogDataSources(request, headers);
-    const cookies = parseCookies(headers);
-    const {body, bodyBytes, bodyTruncated} = await extractBody(request);
-
-    // --- 2. Sanitize and prepare any remaining data ---
-    const edgeRequestTime = parseInt(headers['x-request-time'] || workerStartTime, 10);
+    const sources = extractLogDataSources(request);
+    const {body, bodyBytes, bodyTruncated} = await extractBody(request, env);
 
     let serializedCustomData = null;
     if (customData) {
@@ -208,68 +174,64 @@ export async function createLogData(request, customData, env) {
         }
     }
 
-    // --- 3. Assemble the final log object ---
+    const headersObject = {};
+    for (const [key, value] of request.headers.entries()) {
+        headersObject[key] = value;
+    }
+
     return {
         logId: pushID.newID({time: workerStartTime}),
-        rayId: headers['cf-ray'],
-        fpID: createBrowserFingerprint(request),
+        rayId: request.headers.get('cf-ray') || null,
+        fpID: sources.fpID,
         deviceHash: sources.deviceHash,
-        sessionHash: sources.sessionHash,
+        connectionHash: sources.connectionHash,
         tlsHash: sources.tlsHash,
-        serverId: sources.serverId,
-        requestTime: edgeRequestTime,
+        requestTime: workerStartTime,
         receivedAt: new Date(workerStartTime).toISOString(),
         processedAt: new Date().toISOString(),
-        queueTime: workerStartTime - edgeRequestTime,
         processingDurationMs: Date.now() - workerStartTime,
-        clientTcpRtt: sources.cf.clientTcpRtt,
-        sessionBin10: headers['x-cf-session-bin10'] ? parseInt(headers['x-cf-session-bin10'], 10) : null,
-        sessionBin100: headers['x-cf-session-bin100'] ? parseInt(headers['x-cf-session-bin100'], 10) : null,
+        clientTcpRtt: sources.cf.clientTcpRtt || null,
+        sample10: sources.sample10,
+        sample100: sources.sample100,
         requestUrl: request.url,
         requestMethod: request.method,
-        requestHeaders: JSON.stringify(headers),
+        requestHeaders: JSON.stringify(headersObject),
         requestBody: body,
-        requestMimeType: headers['content-type'] || null,
-        urlDomain: sources.urlDomain,
-        urlPath: sources.urlPath,
-        urlQuery: sources.urlQuery,
-        headerBytes: new TextEncoder().encode(Object.entries(headers).join()).length,
+        requestMimeType: request.headers.get('content-type') || null,
+        urlDomain: sources.url.hostname,
+        urlPath: sources.url.pathname,
+        urlQuery: sources.url.search,
+        headerBytes: JSON.stringify(headersObject).length,
         bodyBytes,
         bodyTruncated,
-        clientIp: sources.clientIp,
-        clientDeviceType: sources.deviceType,
-        clientCookies: JSON.stringify(cookies),
-        cId: headers['x-cid'] || cookies['_ss_cID'] || null,
-        sId: headers['x-sid'] || cookies['_ss_sID'] || null,
-        eId: headers['x-eid'] || cookies['_ss_eID'] || null,
-        cfAsn: sources.cf.asn,
-        cfAsOrganization: sources.cf.asOrganization,
+        clientIp: sources.clientIp || null,
+        clientDeviceType: sources.clientDeviceType,
+        clientCookies: JSON.stringify(sources.cookies),
+        cId: sources.cookies['_ss_cID'] || null,
+        sId: sources.cookies['_ss_sID'] || null,
+        eId: sources.cookies['_ss_eID'] || null,
+        cfAsn: sources.cf.asn || null,
+        cfAsOrganization: sources.cf.asOrganization || null,
         cfBotManagement: sources.cf.botManagement ? JSON.stringify(sources.cf.botManagement) : null,
-        cfClientAcceptEncoding: sources.cf.clientAcceptEncoding,
-        cfColo: sources.cf.colo,
-        cfCountry: sources.cf.country,
-        cfCity: sources.cf.city,
-        cfContinent: sources.cf.continent,
-        cfHttpProtocol: sources.httpProtocol,
-        cfLatitude: sources.cf.latitude,
-        cfLongitude: sources.cf.longitude,
-        cfPostalCode: sources.cf.postalCode,
-        cfRegion: sources.cf.region,
-        cfRegionCode: sources.cf.regionCode,
-        cfTimezone: sources.cf.timezone,
-        cfTlsCipher: sources.tlsCipher,
-        cfTlsVersion: sources.cf.tlsVersion,
+        cfClientAcceptEncoding: sources.cf.clientAcceptEncoding || null,
+        cfColo: sources.cf.colo || null,
+        cfCountry: sources.cf.country || null,
+        cfCity: sources.cf.city || null,
+        cfContinent: sources.cf.continent || null,
+        cfHttpProtocol: sources.cf.httpProtocol || null,
+        cfLatitude: sources.cf.latitude || null,
+        cfLongitude: sources.cf.longitude || null,
+        cfPostalCode: sources.cf.postalCode || null,
+        cfRegion: sources.cf.region || null,
+        cfRegionCode: sources.cf.regionCode || null,
+        cfTimezone: sources.cf.timezone || null,
+        cfTlsCipher: sources.cf.tlsCipher || null,
+        cfTlsVersion: sources.cf.tlsVersion || null,
         cfTlsClientAuth: sources.cf.tlsClientAuth ? JSON.stringify(sources.cf.tlsClientAuth) : null,
         geoId: sources.geoId,
-        threatScore: sources.threatScore,
-        threatCategory: headers['x-cf-threat-category'] || null,
-        ja3Hash: sources.ja3Hash,
-        verifiedBot: sources.verifiedBot,
-        wafScore: headers['x-cf-waf-score'] ? parseInt(headers['x-cf-waf-score'], 10) : null,
-        edgeServerIp: headers['x-cf-edge-ip'] || null,
-        edgeServerPort: headers['x-cf-edge-port'] ? parseInt(headers['x-cf-edge-port'], 10) : null,
-        clientPort: headers['x-cf-client-port'] ? parseInt(headers['x-cf-client-port'], 10) : null,
-        zoneName: sources.zoneName,
+        threatScore: sources.cf.threatScore || null,
+        ja3Hash: sources.cf.botManagement?.ja3Hash || null,
+        verifiedBot: sources.cf.botManagement?.verifiedBot ?? null,
         workerEnv: JSON.stringify(sanitizedEnv),
         data: serializedCustomData,
     };
