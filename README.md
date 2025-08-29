@@ -1,218 +1,246 @@
-
 # Divortio D1 Logger for Cloudflare Workers
 
-**A production-grade, high-performance logging solution for Cloudflare Workers, written in standard JavaScript.**
+### A Simple Explanation
 
+This project is a high-speed digital filing system for a website. Every time a visitor interacts with the site, this
+system takes a detailed snapshot—what they did, where they're from, what device they used—and files it away instantly
+without slowing anything down. This organized record (a "log") helps the website owner understand user behavior, improve
+security, and fix problems.
 
-A "fire-and-forget" logging system that captures over 50 data points per request, enriches them with advanced security
-signals, and writes them to a D1 database—all with zero performance impact on your user-facing applications.
+### Technical Overview
 
+This repository contains a high-performance, non-blocking logging service for the Cloudflare Workers ecosystem. Its
+purpose is to receive request data via RPC, process it into a structured log entry, and persist it to a Cloudflare D1
+database. The design uses a sharded Durable Object for in-memory batching to ensure high throughput and minimal database
+writes, adding zero performance overhead to the calling application.
 
+### Architectural Flow
 
----
+The system uses an asynchronous, "fire-and-forget" RPC pipeline. A user-facing Worker offloads logging to this service,
+which then forwards the processed log to a Durable Object for batching and persistence.
 
-## 🚀 Features
+```mermaid
+sequenceDiagram
+    participant User
+    participant App Worker
+    participant Logger Worker (RPC Service)
+    participant LogBatcher (Durable Object)
+    participant D1 Database
 
-* **Comprehensive Data Capture**: Logs a rich dataset for every request, including client details, connection info, and
-  geolocation.
-* **Enriched Security Signals**: Uses Transform Rules to capture advanced security data like **Threat Score** and **JA3
-  Hash**.
-* **Flexible Custom Data**: Includes an optional `data` field to log any arbitrary, application-specific JSON object.
-* **Zero Latency**: The "fire-and-forget" RPC architecture ensures that logging never blocks or slows down the response
-  to the user.
-* **Extremely Scalable**: Employs a sharded Durable Object for intelligent, high-throughput log batching.
-* **Modern RPC**: Uses the `WorkerEntrypoint` class for a robust and explicit RPC server implementation.
-* **Automatic Migrations**: `wrangler.toml` is configured for automatic D1 database schema migrations.
-
----
-
-## 🏛️ Architecture Overview
-
-This system is composed of two primary workers: your main application worker and this logging worker. They communicate
-privately on Cloudflare's network using an RPC-like Service Binding.
-
-**Request Flow:**
-`User` -> `Your App Worker` -> (RPC Call) -> `Logger Worker` -> `LogBatcher Durable Object` -> (Batch Write)
--> `D1 Database`
-
-1. **App Worker**: Your primary application receives the user's request. Its only job is to make a non-blocking RPC call
-   to the `Logger Worker`.
-2. **Logger Worker**: Receives the request object via RPC. It compiles the comprehensive log data and forwards it to the
-   correct Durable Object shard.
-3. **LogBatcher Durable Object**: A stateful object that collects logs in-memory for a short period (e.g., 10 seconds).
-4. **D1 Database**: The Durable Object writes the entire batch of logs to the database in a single, efficient
-   transaction.
+    User->>+App Worker: Sends Request
+    App Worker->>-Logger Worker: env.LOGGER.log(request)
+    App Worker-->>-User: Sends Response (immediately)
+    Logger Worker->>+LogBatcher: stub.addLog(logData)
+    Note over Logger Worker, D1 Database: Log is processed asynchronously
+    LogBatcher-->>-D1 Database: Writes batch of logs
+```
 
 ---
 
-## Data Points Collected
+### Section 3: Example Log Entry
 
 
-| Goal | Header Name | Value (Expression) |
-| :--- | :--- | :--- |
-| **Set Metal ID** | `X-CF-Metal-ID` | `cf.metal.id` |
-| **Set Client IP** | `X-CF-Client-IP` | `ip.src` |
-| **Set Threat Score** | `X-CF-Threat-Score` | `to_string(cf.threat_score)` |
-| **Set JA3 Hash** | `X-CF-JA3-Hash` | `cf.ja3_hash` |
-| **Set Verified Bot** | `X-CF-Verified-Bot` | `cf.bot_management.verified_bot` |
-| **Set WAF Score** | `X-CF-WAF-Score` | `to_string(cf.waf.score)` |
-| **Set Edge IP** | `X-CF-Edge-IP` | `cf.edge.server_ip` |
-| **Set Edge Port** | `X-CF-Edge-Port` | `to_string(cf.edge.server_port)` |
-| **Set Client Port** | `X-CF-Client-Port` | `to_string(cf.edge.client_port)` |
-| **Set Zone Name** | `X-CF-Zone-Name` | `cf.zone.name` |
-| **Edge Request
-Timestamp** | `X-Request-Time` | `concat(to_string(http.request.timestamp.sec), to_string(http.request.timestamp.msec))` |
-| **Human-Readable Threat
-Category**| `X-CF-Threat-Category`| `if(cf.threat_score > 80, "Critical", if(cf.threat_score > 50, "High", if(cf.threat_score > 20, "Medium", "Low")))` |
-| **Set Device
-Type** | `X-Device-Type` | `if(lower(http.user_agent) matches "(?:phone|windows\\s+phone|ipod|blackberry|(?:android|bb\\d+|meego|silk|googlebot) .+? mobile|palm|windows\\s+ce|opera mini|avantgo|mobilesafari|docomo|kaios)", "mobile", if(lower(http.user_agent) matches "(?:ipad|playbook|(?:android|bb\\d+|meego|silk)(?! .+? mobile))", "tablet", "desktop"))` |
-| **TLS
-Fingerprint** | `X-CF-TLS-Hash` | `to_string(crc32(concat(cf.bot_management.ja3_hash, cf.tls_cipher, cf.tls_client_random)))` |
-| **Device
-Fingerprint** | `X-CF-Device-Hash` | `to_string(crc32(concat(http.user_agent, cf.bot_management.ja3_hash, cf.tls_cipher)))` |
-| **Session
-Fingerprint** | `X-CF-Session-Hash` | `to_string(crc32(concat(ip.src, http.user_agent, cf.bot_management.ja3_hash, cf.tls_cipher)))` |
-| **Extract Colo from Ray ID** | `X-CF-Colo` | `substring(cf.ray_id, -3)` |
-| **Server Identifier** | `X-CF-Server-ID` | `concat(substring(cf.ray_id, -3), cf.metal.id)` |
-| **Protocol Fingerprint** | `X-CF-Protocol-Hash` | `to_string(crc32(concat(http.request.version, cf.tls_cipher)))` |
-| **Geographic
-Identifier** | `X-CF-Geo-ID` | `concat(ip.src.continent, "-", ip.src.country, "-", ip.src.region_code, "-", ip.src.city, "-", ip.src.postal_code)` |
-| **Decile Bucket (
-0-9)** | `X-CF-Session-Bin10` | `substring(to_string(crc32(to_string(crc32(concat(ip.src, http.user_agent, cf.bot_management.ja3_hash, cf.tls_cipher))))), -1)` |
-| **Percentile Bucket (
-0-99)** | `X-CF-Session-Bin100` | `substring(to_string(crc32(to_string(crc32(concat(ip.src, http.user_agent, cf.bot_management.ja3_hash, cf.tls_cipher))))), -2)` |
-| **Set Request Domain** | `X-URL-Domain` | `http.host` |
-| **Set Request Path** | `X-URL-Path` | `http.request.uri.path` |
-| **Set Request Query String** | `X-URL-Query` | `http.request.uri.query` |
-| **Parse Cookie `_ss_cID`** | `X-cID` | `http.request.cookies["_ss_cID"]` |
-| **Parse Cookie `_ss_sID`** | `X-sID` | `http.request.cookies["_ss_sID"]` |
-| **Parse Cookie `_ss_eID`** | `X-eID` | `http.request.cookies["_ss_eID"]` |
+### Example Log Entry
 
----
+The following JSON object is an example of a single record as it is structured for storage.
 
+```json
+{
+  "logId": "0QZ7qAbkL9xZ~_bV",
+  "rayId": "8abc1234def56789-EWR",
+  "fpID": "fp_a1b2c3d4e5f6g7h8",
+  "deviceHash": "1234567890",
+  "connectionHash": "0987654321",
+  "tlsHash": "1122334455",
+  "requestTime": 1724967147000,
+  "receivedAt": "2025-08-29T21:12:27.000Z",
+  "processedAt": "2025-08-29T21:12:27.002Z",
+  "processingDurationMs": 2,
+  "clientTcpRtt": 50,
+  "sample10": 7,
+  "sample100": 89,
+  "requestUrl": "[https://example.com/api/v1/user?id=123](https://example.com/api/v1/user?id=123)",
+  "requestMethod": "POST",
+  "requestHeaders": "{\"host\":\"example.com\",\"user-agent\":\"Mozilla/5.0...\"}",
+  "requestBody": "{\"username\":\"test\"}",
+  "requestMimeType": "application/json",
+  "urlDomain": "example.com",
+  "urlPath": "/api/v1/user",
+  "urlQuery": "?id=123",
+  "headerBytes": 512,
+  "bodyBytes": 18,
+  "bodyTruncated": false,
+  "clientIp": "203.0.113.1",
+  "clientDeviceType": "desktop",
+  "clientCookies": "{\"_ss_fpID\":\"fp_a1b2c3d4e5f6g7h8\"}",
+  "cId": null,
+  "sId": "sid_abcdef123456",
+  "eId": null,
+  "uID": "uid_user9876",
+  "emID": null,
+  "emA": null,
+  "cfAsn": 13335,
+  "cfAsOrganization": "Cloudflare, Inc.",
+  "cfBotManagement": "{\"score\":99}",
+  "cfClientAcceptEncoding": "gzip, deflate, br",
+  "cfColo": "EWR",
+  "cfCountry": "US",
+  "cfCity": "Newark",
+  "cfContinent": "NA",
+  "cfHttpProtocol": "HTTP/2",
+  "cfLatitude": "40.73570",
+  "cfLongitude": "-74.17240",
+  "cfPostalCode": "07175",
+  "cfRegion": "New Jersey",
+  "cfRegionCode": "NJ",
+  "cfTimezone": "America/New_York",
+  "cfTlsCipher": "AEAD-AES128-GCM-SHA256",
+  "cfTlsVersion": "TLSv1.3",
+  "cfTlsClientAuth": null,
+  "geoId": "NA-US-NJ-Newark-07175",
+  "threatScore": 10,
+  "ja3Hash": "e7d705a3286e19ea42f587f344ee6ee5",
+  "verifiedBot": false,
+  "workerEnv": "{\"BATCH_INTERVAL_MS\":10000}",
+  "data": "{\"abTestGroup\":\"B\"}"
+}
 
-## ☁️ Cloudflare UI Deployment (Connect to Git)
-
-This project is designed to be deployed directly from your GitHub repository using the Cloudflare dashboard.
-
-### Step 1: Fork the Repository
-
-First, ensure you have forked this repository (`https://github.com/divortio/divortio-logdo`) to your own
-GitHub account.
-
-### Step 2: Create the D1 Database
-
-1. In the Cloudflare Dashboard, navigate to **Workers & Pages** > **D1**.
-2. Click **Create database**, give it a name (e.g., `production-logs`), and create it.
-3. Copy the **Database ID**. You will need this for the next step.
-
-### Step 3: Deploy the Worker
-
-1. In the Cloudflare Dashboard, navigate to **Workers & Pages** and click **Create application**.
-2. Select the **Connect to Git** option.
-3. Choose your forked repository and click **Begin setup**.
-4. Cloudflare will detect the `wrangler.toml` file.
-    * **Project Name**: `divortio-logdo` (or as desired).
-    * **Production Branch**: `main`.
-5. Navigate to the **Variables** section to add your D1 database binding:
-    * Click **Add binding**.
-    * **Binding type**: D1 Database.
-    * **Binding name**: `LOGGING_DB` (this must match the name in `wrangler.toml`).
-    * **D1 database**: Select the `production-logs` database you created.
-6. Navigate to the **Durable Objects** section:
-    * Click **Add binding**.
-    * **Binding name**: `LOG_BATCHER`.
-    * **Class name**: `LogBatcher`.
-7. Click **Save and Deploy**. Cloudflare will now build and deploy your worker.
-
-### Step 4: Run the Database Migration
-
-After the first deployment, you must apply the database schema.
-
-1. Navigate to your newly deployed worker in the Cloudflare dashboard.
-2. Go to the **D1** tab.
-3. The UI will show that you have unapplied migrations. Click **Apply migrations** to create and update
-   the `RequestLogs` table.
+```
 
 ---
 
-## ⚙️ Configuration
+### Section 4: Data Points Collected
 
-### Transform Rule for Data Enrichment (Required)
+### Data Points Collected
 
-To capture the full range of security and edge data, you must create **one** "Modify Request Header" Transform Rule.
+This table details every field collected by the logger, which directly corresponds to the D1 database schema.
 
-1. Go to your Cloudflare dashboard and select your domain.
-2. Navigate to **Rules -> Transform Rules**.
-3. Click **Create transform rule** and select **Modify Request Header**.
-4. Give your rule a name: `[Logging] Enrich Request Data`.
-5. Under **Then...**, add the following headers:
+| Name | Type | Example | Description |
+| :--- | :--- | :--- | :--- |
+| **logId** | `TEXT` | `0QZ7qAbkL9xZ~_bV` | A unique, time-sortable Push ID generated for each log entry. |
+| **rayId** | `TEXT` | `8abc1234def56789-EWR` | The `cf-ray` header, unique to every request that goes through Cloudflare. |
+| **fpID** | `TEXT` | `fp_a1b2c3d4e5f6g7h8` | A client-side generated fingerprint ID, sourced from the `_ss_fpID` cookie. |
+| **deviceHash** | `TEXT` | `1234567890` | A hash of the User-Agent and TLS signature to identify the device type. |
+| **connectionHash** | `TEXT` | `0987654321` | A hash of the IP, User-Agent, and TLS signature to identify a user's session. |
+| **tlsHash** | `TEXT` | `1122334455` | A hash of the JA3, cipher, and random value to fingerprint the TLS connection. |
+| **requestTime** | `INTEGER`| `1724967147000` | A Unix timestamp (milliseconds) of when the log processing started. |
+| **receivedAt** | `DATETIME`| `2025-08-29T21:12:27.000Z` | An ISO 8601 timestamp of when the log processing started. |
+| **processedAt** | `DATETIME`| `2025-08-29T21:12:27.002Z` | An ISO 8601 timestamp of when the log object was fully assembled. |
+| **processingDurationMs**| `INTEGER`| `2` | The total time in milliseconds it took for the worker to assemble the log object. |
+| **clientTcpRtt** | `INTEGER`| `50` | The client's TCP round-trip time to the Cloudflare edge. |
+| **sample10** | `INTEGER`| `7` | A 0-9 bucket derived from the connection hash, for decile-based A/B testing. |
+| **sample100** | `INTEGER`| `89` | A 0-99 bucket derived from the connection hash, for percentile-based A/B testing. |
+| **requestUrl** | `TEXT` | `https://example.com/api/v1/user?id=123` | The full URL of the incoming request. |
+| **requestMethod** | `TEXT` | `POST` | The HTTP method of the request (e.g., GET, POST). |
+| **requestHeaders** | `TEXT` | `{"host":"example.com",...}` | A JSON string representation of all request headers. |
+| **requestBody** | `TEXT` | `{"username":"test"}` | The request body, truncated to the `MAX_BODY_SIZE` configured in `wrangler.toml`. |
+| **requestMimeType** | `TEXT` | `application/json` | The `content-type` of the request. |
+| **urlDomain** | `TEXT` | `example.com` | The hostname from the request URL. |
+| **urlPath** | `TEXT` | `/api/v1/user` | The path from the request URL. |
+| **urlQuery** | `TEXT` | `?id=123` | The query string from the request URL. |
+| **headerBytes** | `INTEGER`| `512` | The approximate size in bytes of the serialized request headers. |
+| **bodyBytes** | `INTEGER`| `18` | The size in bytes of the original request body. |
+| **bodyTruncated** | `BOOLEAN`| `false` | A boolean indicating if the logged request body was truncated. |
+| **clientIp** | `TEXT` | `203.0.113.1` | The client's IP address, sourced from `x-real-ip` or `cf-connecting-ip`. |
+| **clientDeviceType** | `TEXT` | `desktop` | The device type ('mobile', 'tablet', 'desktop') derived from the User-Agent. |
+| **clientCookies** | `TEXT` | `{"_ss_fpID":"fp_abc",...}` | A JSON string representation of all request cookies. |
+| **cId** | `TEXT` | `cid_campaign1` | A campaign or client ID, sourced from `_ss_cID` or `_cc_cID` cookies. |
+| **sId** | `TEXT` | `sid_abcdef123456` | A session ID, sourced from `_ss_sID` or `_cc_sID` cookies. |
+| **eId** | `TEXT` | `eid_user_login` | An event ID, sourced from `_ss_eID` or `_cc_eID` cookies. |
+| **uID** | `TEXT` | `uid_user9876` | A user ID, sourced from `_ss_uID` or `_cc_uID` cookies. |
+| **emID** | `TEXT` | `emid_...` | An encoded email ID, sourced from `_ss_emID` or `_cc_emID` cookies. |
+| **emA** | `TEXT` | `test@example.com` | An email address, sourced from `_ss_emA` or `_cc_emA` cookies. |
+| **cfAsn** | `INTEGER` | `13335` | The Autonomous System Number of the client's IP. |
+| **cfAsOrganization** | `TEXT` | `Cloudflare, Inc.` | The organization associated with the ASN. |
+| **cfBotManagement** | `TEXT` | `{"score":99}` | An object containing bot management scores and data. |
+| **cfClientAcceptEncoding** | `TEXT` | `gzip, deflate, br` | The original `Accept-Encoding` header sent by the client. |
+| **cfColo** | `TEXT` | `EWR` | The Cloudflare data center that handled the request. |
+| **cfCountry** | `TEXT` | `US` | The client's country code. |
+| **cfCity** | `TEXT` | `Newark` | The client's city. |
+| **cfContinent** | `TEXT` | `NA` | The client's continent code. |
+| **cfHttpProtocol** | `TEXT` | `HTTP/2` | The HTTP protocol version used. |
+| **cfLatitude** | `TEXT` | `40.73570` | The client's latitude. |
+| **cfLongitude** | `TEXT` | `-74.17240` | The client's longitude. |
+| **cfPostalCode** | `TEXT` | `07175` | The client's postal code. |
+| **cfRegion** | `TEXT` | `New Jersey` | The client's region. |
+| **cfRegionCode** | `TEXT` | `NJ` | The client's region code. |
+| **cfTimezone** | `TEXT` | `America/New_York` | The client's timezone. |
+| **cfTlsCipher** | `TEXT` | `AEAD-AES128-GCM-SHA256` | The TLS cipher used for the connection. |
+| **cfTlsVersion** | `TEXT` | `TLSv1.3` | The TLS version used for the connection. |
+| **cfTlsClientAuth** | `TEXT` | `null` | Details about client certificate authentication. |
+| **geoId** | `TEXT` | `NA-US-NJ-Newark-07175` | A concatenated string of geographic data. |
+| **threatScore** | `INTEGER`| `10` | The Cloudflare threat score (0-100). |
+| **ja3Hash** | `TEXT` | `e7d705a3286e...` | The client's JA3 fingerprint for identifying TLS negotiation patterns. |
+| **verifiedBot** | `BOOLEAN`| `false` | A boolean indicating if the request is from a known good bot. |
+| **workerEnv** | `TEXT` | `{"BATCH_...":10000}` | A JSON string of non-secret environment variables from `wrangler.toml`. |
+| **data** | `TEXT` | `{"abTestGroup":"B"}` | A JSON string of any custom data object passed with the `log()` call. |
 
-| Action | Header Name | Value (Expression) |
-| :--- | :--- | :--- |
-| Set dynamic | `X-CF-Metal-ID` | `cf.metal.id` |
-| Set dynamic | `X-CF-Threat-Score` | `to_string(cf.threat_score)` |
-| Set dynamic | `X-CF-JA3-Hash` | `cf.ja3_hash` |
-| Set dynamic | `X-CF-Verified-Bot` | `cf.bot_management.verified_bot` |
-| Set dynamic | `X-CF-WAF-Score` | `to_string(cf.waf.score)` |
-| Set dynamic | `X-CF-Edge-IP` | `cf.edge.server_ip` |
-| Set dynamic | `X-CF-Edge-Port` | `to_string(cf.edge.server_port)` |
-| Set dynamic | `X-CF-Client-Port` | `to_string(cf.edge.client_port)` |
-| Set dynamic | `X-CF-Zone-Name` | `cf.zone.name` |
+### Cloudflare UI Deployment
 
-6. Click **Deploy**.
+This project is designed for deployment via a forked GitHub repository.
+
+#### 1. Fork the Repository
+
+Fork this repository to your own GitHub account.
+
+#### 2. Create the D1 Database
+
+* Navigate to **Workers & Pages** > **D1** in the Cloudflare Dashboard.
+* Click **Create database**, name it (e.g., `production-logs`), and copy the **Database ID**.
+
+#### 3. Deploy the Worker
+
+* Navigate to **Workers & Pages** and click **Create application** > **Connect to Git**.
+* Choose your forked repository. Cloudflare will detect the `wrangler.toml` file.
+* Under **Variables**, add the `LOGGING_DB` binding (D1 Database) and the environment variables (`BATCH_INTERVAL_MS`,
+  etc.).
+* Under **Durable Objects**, add the `LOG_BATCHER` binding.
+* Click **Save and Deploy**.
+
+#### 4. Run the Database Migration
+
+* Navigate to your newly deployed worker's dashboard.
+* Go to the **D1** tab and click **Apply migrations** to create the `RequestLogs` table.
+
+### Configuration
+
+Configuration is managed via environment variables in the `wrangler.toml` file.
+
+```toml
+
+[vars]
+BATCH_INTERVAL_MS = 10000
+MAX_BATCH_SIZE = 200
+MAX_BODY_SIZE = 10240
+```
 
 ---
 
-## 🔌 Usage
+### Section 7: Usage
 
-To use the logger from another worker:
 
-1. In the `wrangler.toml` of your *other* worker, add a service binding:
-   ```toml
-   [[services]]
-   binding = "LOGGER"
-   service = "divortio-logdo" # The name of this logging worker
-   ```
-2. In your other worker's code, you can now call the logger.
+### Usage
 
-   ```javascript
-   /**
-    * @typedef {object} LoggerService
-    * @property {(request: Request, data?: object) => void} log
-    */
+1.  **Add Service Binding**: In your application worker's `wrangler.toml`, bind this logging worker.
+    ```toml
+    [[services]]
+    binding = "LOGGER"
+    service = "divortio-logdo"
+    ```
 
-   /**
-    * @typedef {object} Env
-    * @property {LoggerService} LOGGER
-    */
+2.  **Call via RPC**: Use the binding to call the `log` method from your application code.
+    ```javascript
+    export default {
+      async fetch(request, env, ctx) {
+        // Basic logging
+        env.LOGGER.log(request);
 
-   export default {
-       /**
-        * @param {Request} request
-        * @param {Env} env
-        * @param {ExecutionContext} ctx
-        */
-       async fetch(request, env, ctx) {
-           // Example 1: Basic logging
-           env.LOGGER.log(request);
+        // Logging with custom data
+        const customData = { transactionId: "xyz-123" };
+        env.LOGGER.log(request, customData);
+        
+        return new Response("OK");
+      }
+    }
+    ```
 
-           // Example 2: Logging with custom application data
-           const customData = {
-               userId: "user-12345",
-               abTestGroup: "B",
-               cartId: "c_abc-def-ghi"
-           };
-           env.LOGGER.log(request, customData);
-
-           // ... your logic
-           return new Response("OK");
-       }
-   }
-   ```
-
----
-
-## 📄 License
-
-This project is licensed under the MIT License.

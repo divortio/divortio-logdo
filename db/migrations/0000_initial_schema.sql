@@ -48,6 +48,9 @@ CREATE TABLE requestlogs
         cid                    TEXT,
         sid                    TEXT,
         eid                    TEXT,
+        uid                    TEXT,
+        emid                   TEXT,
+        ema                    TEXT,
 
         -- Cloudflare 'cf' Object Properties
         cfasn                  INTEGER,
@@ -82,5 +85,5 @@ CREATE TABLE requestlogs
 CREATE INDEX IF NOT EXISTS idx_receivedat ON requestlogs (receivedat);
 CREATE INDEX IF NOT EXISTS idx_rayid ON requestlogs (rayid);
 CREATE INDEX IF NOT EXISTS idx_fpid ON requestlogs (fpid);
-CREATE INDEX IF NOT EXISTS idx_connectionhash ON requestlogs (connectionhash);
+CREATE INDEX IF NOT EXISTS idx_eID ON requestlogs (eid);
 CREATE INDEX IF NOT EXISTS idx_geoid ON requestlogs (geoid);
