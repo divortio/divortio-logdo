@@ -19,27 +19,15 @@ writes, adding zero performance overhead to the calling application.
 The system uses an asynchronous, "fire-and-forget" RPC pipeline. A user-facing Worker offloads logging to this service,
 which then forwards the processed log to a Durable Object for batching and persistence.
 
+
 ```mermaid
-sequenceDiagram
-    participant User
-    participant App Worker
-    participant Logger Worker (RPC Service)
-    participant LogBatcher (Durable Object)
-    participant D1 Database
-
-    User->>+App Worker: Sends Request
-    App Worker->>Logger Worker: env.LOGGER.log(request) (fire-and-forget)
-    App Worker-->>-User: Sends Response (immediately)
-
-    activate Logger Worker
-    Logger Worker->>+LogBatcher: stub.addLog(logData)
-    deactivate Logger Worker
-
-    activate LogBatcher
-    Note over LogBatcher, D1 Database: Batches logs over time
-    LogBatcher-->>D1 Database: Writes batch of logs
-    deactivate LogBatcher
+graph TD
+    A[Client] --> B(divort.io);
+    B -- "Log Data" --> C(Log Worker);
+    C --> D(Batch Logs);
+    D -- "Write" --> E(D1 Database);
 ```
+
 
 ---
 
