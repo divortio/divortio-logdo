@@ -28,11 +28,17 @@ sequenceDiagram
     participant D1 Database
 
     User->>+App Worker: Sends Request
-    App Worker->>-Logger Worker: env.LOGGER.log(request)
+    App Worker->>Logger Worker: env.LOGGER.log(request) (fire-and-forget)
     App Worker-->>-User: Sends Response (immediately)
+
+    activate Logger Worker
     Logger Worker->>+LogBatcher: stub.addLog(logData)
-    Note over Logger Worker, D1 Database: Log is processed asynchronously
-    LogBatcher-->>-D1 Database: Writes batch of logs
+    deactivate Logger Worker
+
+    activate LogBatcher
+    Note over LogBatcher, D1 Database: Batches logs over time
+    LogBatcher-->>D1 Database: Writes batch of logs
+    deactivate LogBatcher
 ```
 
 ---
