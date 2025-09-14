@@ -1,85 +1,90 @@
 /**
  * @file src/worker.mjs
- * @description Main entry point for the Divortio D1 Logger. This module defines a
- * class that extends WorkerEntrypoint to act as a modern RPC server, exposing
- * methods that can be called securely by other Cloudflare Workers using Service Bindings.
+ * @description Main entry point for the Divortio D1 Logger.
  * @module WorkerEntrypoint
  */
 
 import {WorkerEntrypoint} from 'cloudflare:workers';
 import {logRequest, createLogData} from './logger.mjs';
+import {compileLogPlan} from './filter/logPlanManager.mjs';
 
 /**
- * The main class for the logging worker, acting as an RPC server.
- * Other workers can call the public methods defined on this class (e.g., `log`, `getLogData`)
- * via a service binding.
- *
- * @class
- * @extends WorkerEntrypoint
+ * @typedef {import('./logDO.mjs').LogBatcher} LogBatcher
+ * @typedef {import('@cloudflare/workers-types').DurableObjectNamespace} DurableObjectNamespace
+ * @typedef {import('@cloudflare/workers-types').ExecutionContext} ExecutionContext
+ * @typedef {import('@cloudflare/workers-types').Request} Request
+ * @typedef {import('@cloudflare/workers-types').Response} Response
+ * @typedef {import('@cloudflare/workers-types').ScheduledController} ScheduledController
  */
+
+/**
+ * @typedef {object} Env
+ * @property {DurableObjectNamespace<LogBatcher>} LOG_BATCHER
+ */
+
 export default class extends WorkerEntrypoint {
-    /**
-     * The execution context of the worker.
-     * @private
-     * @type {ExecutionContext}
-     */
+    /** @private @type {ExecutionContext} */
     _ctx;
-
-    /**
-     * The worker's environment bindings.
-     * @private
-     * @type {object}
-     */
+    /** @private @type {Env} */
     _env;
+    /** @private @type {Promise<Array<object>>} */
+    _logPlanPromise;
 
     /**
-     * Creates an instance of the logging worker entrypoint.
-     *
-     * @param {ExecutionContext} ctx The execution context provided by the Cloudflare runtime.
-     * @param {object} env The environment bindings provided by the Cloudflare runtime.
+     * @param {ExecutionContext} ctx
+     * @param {Env} env
      */
     constructor(ctx, env) {
         super(ctx, env);
         this._ctx = ctx;
         this._env = env;
+        this._logPlanPromise = compileLogPlan(env);
     }
 
-    /**
-     * The standard HTTP fetch handler. Since this worker is intended for RPC calls only,
-     * any direct HTTP or browser requests will receive an informational error response.
-     *
-     * @returns {Response} A 405 Method Not Allowed response.
-     */
+    /** @returns {Response} */
     fetch() {
         return new Response('This worker is an RPC service and is not meant to be accessed directly via HTTP.', {
-            status: 405, // Method Not Allowed
+            status: 405,
         });
     }
 
     /**
-     * [RPC Method] Logs a request in a non-blocking, "fire-and-forget" manner.
-     * This is the primary method intended to be called by other workers.
-     *
-     * @param {Request} request The original request object to be logged.
-     * @param {object} [data] Optional. An arbitrary JSON-serializable object for custom application data.
+     * @param {Request} request
+     * @param {object} [data]
+     * @returns {Promise<void>}
      */
-    log(request, data) {
-        logRequest(request, data, this._env, this._ctx);
+    async log(request, data) {
+        const logPlan = await this._logPlanPromise;
+        logRequest(request, data, this._env, this._ctx, logPlan);
     }
 
     /**
-     * [RPC Method] Retrieves the compiled log data for a given request without
-     * actually logging it. Useful for debugging or inspection.
-     *
-     * @param {Request} request The request object to analyze.
-     * @param {object} [data] Optional. An arbitrary JSON-serializable object for custom application data.
-     * @returns {Promise<object>} A promise that resolves with the complete log data object.
+     * @param {Request} request
+     * @param {object} [data]
+     * @returns {Promise<object>}
      */
     async getLogData(request, data) {
         return await createLogData(request, data, this._env);
     }
+
+    /**
+     * @param {ScheduledController} controller
+     * @param {Env} env
+     * @param {ExecutionContext} ctx
+     * @returns {Promise<void>}
+     */
+    async scheduled(controller, env, ctx) {
+        console.log('[Cron Dispatcher] Scheduled pruning check initiated.');
+        const logPlan = await this._logPlanPromise;
+
+        for (const route of logPlan) {
+            if (route.retentionDays && route.pruningIntervalDays) {
+                const doName = `pruner_${route.tableName}`;
+                const stub = env.LOG_BATCHER.getByName(doName);
+                ctx.waitUntil(stub.runRetentionCheck(route));
+            }
+        }
+    }
 }
 
-// We must also export the Durable Object class from the main worker module so that
-// Cloudflare's runtime knows how to instantiate it when it's called.
 export {LogBatcher} from './logDO.mjs';

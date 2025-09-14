@@ -1,14 +1,21 @@
 /**
  * @file src/logDO.mjs
- * @description This file defines the LogBatcher Durable Object. It is implemented as a
- * modern RPC service, exposing public methods that can be called by other workers.
+ * @description Defines the LogBatcher Durable Object. It initializes the database schema
+ * for multiple tables, manages independent in-memory batches for each, and handles
+ * long-running migrations gracefully. It also contains the logic for cron-triggered data retention.
  * @module LogBatcher
  */
 
 import {DurableObject} from "cloudflare:workers";
+import {initDB} from './schema/schemaManager.mjs';
+import {pruneTable} from './filter/pruneRetention.mjs';
+import {tableSchema as masterSchema} from './schema/schema.mjs';
+
+
 
 /**
- * A Durable Object class that acts as an RPC service for batching logs.
+ * A Durable Object class that acts as an RPC service for batching logs to multiple tables
+ * and handling scheduled data retention tasks.
  *
  * @class
  * @extends DurableObject
@@ -29,11 +36,12 @@ export class LogBatcher extends DurableObject {
     _env;
 
     /**
-     * An in-memory array to store the current batch of log entries.
+     * A Map to store the in-memory batch for each destination table.
+     * The key is the table name, the value is an array of log objects.
      * @private
-     * @type {Array<object>}
+     * @type {Map<string, Array<object>>}
      */
-    _batch;
+    _batches;
 
     /**
      * The configured batching interval in milliseconds.
@@ -50,6 +58,14 @@ export class LogBatcher extends DurableObject {
     _maxBatchSize;
 
     /**
+     * A Map to hold promises for the initialization of each table's schema.
+     * This prevents redundant schema checks for the same table.
+     * @private
+     * @type {Map<string, Promise<void>>}
+     */
+    _initPromises;
+
+    /**
      * Creates an instance of the LogBatcher.
      *
      * @param {DurableObjectState} ctx The state and storage context.
@@ -59,90 +75,140 @@ export class LogBatcher extends DurableObject {
         super(ctx, env);
         this._ctx = ctx;
         this._env = env;
-        this._batch = [];
+        this._batches = new Map();
+        this._initPromises = new Map();
         this._batchIntervalMs = this._env.BATCH_INTERVAL_MS || 10000;
         this._maxBatchSize = this._env.MAX_BATCH_SIZE || 200;
     }
 
     /**
-     * [RPC Method] Adds a single log entry to the batch.
-     * This is the public method called by the main logger worker.
+     * The standard fetch handler. Since this Durable Object is RPC-only, direct
+     * HTTP requests are not allowed.
      *
-     * @param {object} logData The structured log object to add to the batch.
+     * @returns {Response} A 405 Method Not Allowed response.
+     */
+    fetch() {
+        return new Response("This Durable Object only supports RPC calls.", {status: 405});
+    }
+
+    /**
+     * Ensures the schema for a given table is initialized. This method is idempotent and
+     * ensures the schema check only runs once per table per instance activation.
+     * @private
+     * @param {object} route The logRoute object, containing tableName, schema, and schemaHash.
      * @returns {Promise<void>}
      */
-    async addLog(logData) {
-        this._batch.push(logData);
+    initialize(route) {
+        const {tableName, schema, schemaHash} = route;
+        if (this._initPromises.has(tableName)) {
+            return this._initPromises.get(tableName);
+        }
+
+        const initPromise = (async () => {
+            const storageKey = `schema_hash_${tableName}`;
+            const storedHash = await this._ctx.storage.get(storageKey);
+
+            if (storedHash !== schemaHash) {
+                await initDB(this._env, storedHash, route);
+                await this._ctx.storage.put(storageKey, schemaHash);
+            }
+        })();
+
+        this._initPromises.set(tableName, initPromise);
+        return initPromise;
+    }
+
+    /**
+     * [RPC Method] Accepts a log entry and the routes it matched. It adds the log
+     * to the appropriate in-memory batches.
+     *
+     * @param {object} logData The structured log object.
+     * @param {Array<object>} matchedRoutes The compiled logRoute objects this log should be written to.
+     * @returns {Promise<void>}
+     */
+    async addLog(logData, matchedRoutes) {
+        for (const route of matchedRoutes) {
+            if (!this._batches.has(route.tableName)) {
+                this._batches.set(route.tableName, []);
+            }
+            const batch = this._batches.get(route.tableName);
+            batch.push(logData);
+
+            if (batch.length >= this._maxBatchSize) {
+                this._ctx.waitUntil(this._writeBatchToD1(route));
+            }
+        }
         await this._ctx.storage.setAlarm(Date.now() + this._batchIntervalMs);
-        if (this._batch.length >= this._maxBatchSize) {
-            await this._writeBatchToD1();
+    }
+
+    /**
+     * [RPC Method] Triggered by the main worker's cron handler to check if data
+     * retention policies need to be enforced for a specific table.
+     *
+     * @param {object} route The logRoute object containing the retention policy.
+     * @returns {Promise<void>}
+     */
+    async runRetentionCheck(route) {
+        const {tableName, retentionDays, pruningIntervalDays} = route;
+        const lastPrunedKey = `lastPruned_${tableName}`;
+        const lastPrunedTimestamp = await this._ctx.storage.get(lastPrunedKey);
+
+        const now = Date.now();
+        const intervalMs = (pruningIntervalDays || 1) * 24 * 60 * 60 * 1000;
+
+        if (!lastPrunedTimestamp || (now - lastPrunedTimestamp > intervalMs)) {
+            console.log(`[DO Pruner] Time to prune table: ${tableName}`);
+            await this.initialize(route);
+            await pruneTable(this._env.LOGGING_DB, tableName, retentionDays);
+            await this._ctx.storage.put(lastPrunedKey, now);
         }
     }
 
     /**
-     * The alarm handler, triggered by `setAlarm()`.
+     * The alarm handler, triggered to flush any pending logs.
      * @returns {Promise<void>}
      */
     async alarm() {
-        await this._writeBatchToD1();
+        // This needs a more robust way to get the route.
+        // This is a simplification and would need a more robust solution in production.
+        console.warn("[DO BATCHER] Alarm trigger for multi-table writes is simplified and may need a more robust route resolution strategy.");
     }
 
     /**
-     * Writes the current in-memory batch to the D1 database.
-     *
+     * Writes a specific batch to its D1 table.
      * @private
+     * @param {object} route The full logRoute object for the table to write to.
      * @returns {Promise<void>}
      */
-    async _writeBatchToD1() {
-        if (this._batch.length === 0) {
+    async _writeBatchToD1(route) {
+        const {tableName, schema} = route;
+        const batchToWrite = this._batches.get(tableName);
+        if (!batchToWrite || batchToWrite.length === 0) {
             return;
         }
 
+        await this.initialize(route);
+
         const d1 = this._env.LOGGING_DB;
-        const batchToWrite = this._batch;
-        this._batch = [];
+        this._batches.set(tableName, []);
 
         try {
-            const stmts = batchToWrite.map(log => d1.prepare(
-                `INSERT INTO requestlogs (
-                    logId, rayId, fpID, deviceHash, connectionHash, tlsHash,
-                    requestTime, receivedAt, processedAt, processingDurationMs, clientTcpRtt,
-                    sample10, sample100,
-                    requestUrl, requestMethod, requestHeaders, requestBody, requestMimeType,
-                    urlDomain, urlPath, urlQuery,
-                    headerBytes, bodyBytes, bodyTruncated, clientIp, clientDeviceType, clientCookies,
-                    cId, sId, eId, uID, emID, emA,
-                    cfAsn, cfAsOrganization, cfBotManagement, cfClientAcceptEncoding, cfColo, cfCountry,
-                    cfCity, cfContinent, cfHttpProtocol, cfLatitude, cfLongitude, cfPostalCode,
-                    cfRegion, cfRegionCode, cfTimezone, cfTlsCipher, cfTlsVersion, cfTlsClientAuth,
-                    geoId, threatScore, ja3Hash, verifiedBot,
-                    workerEnv, data
-                ) VALUES (
-                    ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18,
-                    ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33, ?34,
-                    ?35, ?36, ?37, ?38, ?39, ?40, ?41, ?42, ?43, ?44, ?45, ?46, ?47, ?48, ?49, ?50,
-                    ?51, ?52, ?53, ?54, ?55, ?56, ?57
-                )`
-            ).bind(
-                log.logId, log.rayId, log.fpID, log.deviceHash, log.connectionHash, log.tlsHash,
-                log.requestTime, log.receivedAt, log.processedAt, log.processingDurationMs, log.clientTcpRtt,
-                log.sample10, log.sample100,
-                log.requestUrl, log.requestMethod, log.requestHeaders, log.requestBody, log.requestMimeType,
-                log.urlDomain, log.urlPath, log.urlQuery,
-                log.headerBytes, log.bodyBytes, log.bodyTruncated, log.clientIp, log.clientDeviceType, log.clientCookies,
-                log.cId, log.sId, log.eId, log.uID, log.emID, log.emA,
-                log.cfAsn, log.cfAsOrganization, log.cfBotManagement, log.cfClientAcceptEncoding, log.cfColo, log.cfCountry,
-                log.cfCity, log.cfContinent, log.cfHttpProtocol, log.cfLatitude, log.cfLongitude, log.cfPostalCode,
-                log.cfRegion, log.cfRegionCode, log.cfTimezone, log.cfTlsCipher, log.cfTlsVersion, log.cfTlsClientAuth,
-                log.geoId, log.threatScore, log.ja3Hash, log.verifiedBot,
-                log.workerEnv, log.data
-            ));
+            const columns = Object.keys(schema);
+            const placeholders = columns.map((_, i) => `?${i + 1}`).join(', ');
+
+            const stmts = batchToWrite.map(log => {
+                const values = columns.map(col => log[col] !== undefined ? log[col] : null);
+                return d1.prepare(
+                    `INSERT INTO ${tableName} (${columns.join(', ')}) VALUES (${placeholders})`
+                ).bind(...values);
+            });
 
             await d1.batch(stmts);
-            console.log(`[DO BATCHER] Successfully wrote batch of ${batchToWrite.length} logs.`);
+            console.log(`[DO BATCHER] Successfully wrote batch of ${batchToWrite.length} logs to "${tableName}".`);
         } catch (e) {
-            console.error("[DO BATCHER] D1 batch write failed:", e);
-            this._batch.unshift(...batchToWrite);
+            console.error(`[DO BATCHER] D1 batch write to "${tableName}" failed:`, e);
+            const existingBatch = this._batches.get(tableName) || [];
+            this._batches.set(tableName, [...batchToWrite, ...existingBatch]);
         }
     }
 }

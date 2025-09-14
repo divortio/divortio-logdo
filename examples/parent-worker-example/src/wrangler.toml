@@ -1,0 +1,14 @@
+# wrangler.toml for the parent application worker (e.g., my-app-worker)
+
+name = "my-app-worker"
+main = "src/index.mjs"
+compatibility_date = "2025-08-21"
+
+# ... other configurations for your worker (e.g., KV, R2 bindings) ...
+
+# This section creates the connection to your logging service.
+[[services]]
+# This is the variable name you will use in your code (e.g., env.LOGGER).
+binding = "LOGGER"
+# This must match the exact name of your deployed logging worker service.
+service = "divortio-logdo"

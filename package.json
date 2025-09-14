@@ -1,25 +1,16 @@
 {
   "name": "divortio-logdo",
   "version": "1.0.0",
-  "description": "Zero latency logging to Cloudflare D1 using Workers & Durable Objects",
+  "description": "A zero-latency logging service for Cloudflare D1 using Workers & Durable Objects.",
   "private": true,
   "scripts": {
-    "dev": "wrangler dev",
-    "deploy": "wrangler deploy",
-    "db:migrate": "wrangler d1 migrations apply production-logs",
-    "db:migrate:dry-run": "wrangler d1 migrations apply production-logs --local --dry-run"
+    "build:routes": "node build/buildRoutes.js",
+    "dev": "npm run build:routes && wrangler dev",
+    "deploy": "npm run build:routes && wrangler deploy"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^4.20240725.0",
     "wrangler": "^4.31.0"
   },
-  "main": "./src/worker.mjs",
-  "repository": {
-    "type": "git",
-    "url": "git+https://github.com/divortio/divortio-logdo.git"
-  },
-  "bugs": {
-    "url": "https://github.com/divortio/divortio-logdo/issues"
-  },
-  "homepage": "https://github.com/divortio/divortio-logdo#readme"
+  "main": "./src/worker.mjs"
 }

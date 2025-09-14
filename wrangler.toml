@@ -1,6 +1,5 @@
 # wrangler.toml
 # Configuration for the Cloudflare Logging Worker.
-# Compatibility: August 2025
 name = "divortio-logdo"
 main = "src/worker.mjs"
 compatibility_date = "2025-08-21"
@@ -11,27 +10,35 @@ workers_dev = false
 [placement]
 mode = "smart"
 
-# The Durable Object class used for batching logs.
-# This must be exported from your main module (src/worker.mjs).
 [[durable_objects.bindings]]
 name = "LOG_BATCHER"
 class_name = "LogBatcher"
 
-# D1 Database binding for storing logs.
 [[d1_databases]]
 binding = "LOGGING_DB"
 database_name = "production-logs"
 database_id = "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx" # <-- Replace with your actual D1 Database ID
 
-# --- Automatic Database Migrations ---
-# This tells Wrangler to automatically apply the SQL files found in the specified directory.
-[[d1_migrations]]
-tag = "v1"
-database = "production-logs"
-migrations_dir = "db/migrations"
-
-# Environment variables for configuring the logger's behavior.
+# ====================================================================================
+# Environment Variables for Configuration
+# ====================================================================================
 [vars]
-BATCH_INTERVAL_MS = 10000 # The max time in ms a batch is held before writing.
-MAX_BATCH_SIZE = 200      # The max number of logs in a single batch.
-MAX_BODY_SIZE = 10240     # The max size in bytes of a request body to log.
+
+# --- Core Batching Configuration ---
+BATCH_INTERVAL_MS = 10000
+MAX_BATCH_SIZE = 200
+MAX_BODY_SIZE = 10240
+
+# --- Default Firehose Configuration ---
+# This is used ONLY if a `_userLogRoutes.mjs` file is NOT present at the project root.
+# Defines the table name for the default, unfiltered log stream.
+LOG_HOSE_TABLE = "log_firehose"
+
+# Optional filter for the default firehose. If undefined, all requests are logged.
+# Example: LOG_HOSE_FILTERS = '[{"url.pathname": {"startsWith": "/api/"}}]'
+# LOG_HOSE_FILTERS =
+
+# --- User-Defined Log Routing ---
+# To enable the advanced Log Routing Pipeline, create a `_userLogRoutes.mjs` file
+# in the root of your project. If that file exists and contains routes, it will
+# completely override the LOG_HOSE_TABLE and LOG_HOSE_FILTERS variables.
