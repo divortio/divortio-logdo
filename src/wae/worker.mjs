@@ -8,32 +8,26 @@ import {WorkerEntrypoint} from 'cloudflare:workers';
 import {logRequest, createLogData} from './logger.mjs';
 import {compileLogPlan} from './logPlanManager.mjs';
 
-// --- JSDoc Type Definitions for IDE ---
 /**
  * @typedef {import('./logDO.mjs').LogBatcher} LogBatcher
  * @typedef {import('@cloudflare/workers-types').AnalyticsEngineDataset} AnalyticsEngineDataset
  * @typedef {import('@cloudflare/workers-types').DurableObjectNamespace} DurableObjectNamespace
  * @typedef {import('@cloudflare/workers-types').D1Database} D1Database
- * @typedef {import('@cloudflare/workers-types').KVNamespace} KVNamespace
  * @typedef {import('@cloudflare/workers-types').ExecutionContext} ExecutionContext
  * @typedef {import('@cloudflare/workers-types').Request} Request
  * @typedef {import('@cloudflare/workers-types').Response} Response
  * @typedef {import('@cloudflare/workers-types').ScheduledController} ScheduledController
- * @typedef {import('./logPlanManager.mjs').CompiledLogRoute} CompiledLogRoute
  */
 
 /**
  * @typedef {object} Env
  * @property {DurableObjectNamespace<LogBatcher>} LOG_BATCHER - Binding to the LogBatcher Durable Object.
  * @property {D1Database} LOGGING_DB - Binding to the D1 database.
- * @property {KVNamespace} LOGDO_STATE - Binding to the KV namespace for state snapshots.
  * @property {AnalyticsEngineDataset} METRICS_BATCH_WRITES - WAE dataset for batch write operations.
  * @property {AnalyticsEngineDataset} METRICS_SCHEMA_MIGRATIONS - WAE dataset for schema migration events.
  * @property {AnalyticsEngineDataset} METRICS_DATA_PRUNING - WAE dataset for data pruning operations.
  * @property {string} [LOG_HOSE_TABLE] - The table name for the default firehose.
  * @property {string} [LOG_HOSE_FILTERS] - Optional filters for the default firehose.
- * @property {number} [LOG_HOSE_RETENTION_DAYS] - Optional retention period for the firehose.
- * @property {number} [LOG_HOSE_PRUNING_INTERVAL_DAYS] - Optional pruning interval for the firehose.
  * @property {number} [BATCH_INTERVAL_MS] - The interval for batching logs.
  * @property {number} [MAX_BATCH_SIZE] - The maximum size of a log batch.
  * @property {number} [MAX_BODY_SIZE] - The maximum size of a request body to log.
@@ -44,7 +38,7 @@ export default class extends WorkerEntrypoint {
     _ctx;
     /** @private @type {Env} */
     _env;
-    /** @private @type {Promise<Array<CompiledLogRoute>>} */
+    /** @private @type {Promise<Array<object>>} */
     _logPlanPromise;
 
     /**

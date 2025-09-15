@@ -10,6 +10,9 @@ workers_dev = false
 [placement]
 mode = "smart"
 
+[triggers]
+crons = ["0 * * * *"] # At the start of every hour
+
 [[durable_objects.bindings]]
 name = "LOG_BATCHER"
 class_name = "LogBatcher"
@@ -18,6 +21,29 @@ class_name = "LogBatcher"
 binding = "LOGGING_DB"
 database_name = "production-logs"
 database_id = "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx" # <-- Replace with your actual D1 Database ID
+
+# ====================================================================================
+# KV Namespace Binding for State Snapshots
+# ====================================================================================
+[[kv_namespaces]]
+binding = "LOGDO_STATE"
+id = "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx" # <-- Replace with your new KV namespace ID
+
+# ====================================================================================
+# Analytics Engine Bindings for Operational Metrics
+# ====================================================================================
+[[analytics_engine_datasets]]
+binding = "METRICS_BATCH_WRITES"
+dataset = "logdo_batch_writes"
+
+[[analytics_engine_datasets]]
+binding = "METRICS_SCHEMA_MIGRATIONS"
+dataset = "logdo_schema_migrations"
+
+[[analytics_engine_datasets]]
+binding = "METRICS_DATA_PRUNING"
+dataset = "logdo_data_pruning"
+
 
 # ====================================================================================
 # Environment Variables for Configuration
@@ -30,15 +56,10 @@ MAX_BATCH_SIZE = 200
 MAX_BODY_SIZE = 10240
 
 # --- Default Firehose Configuration ---
-# This is used ONLY if a `_userLogRoutes.mjs` file is NOT present at the project root.
-# Defines the table name for the default, unfiltered log stream.
+# These settings are used to create the mandatory firehose log route.
 LOG_HOSE_TABLE = "log_firehose"
-
-# Optional filter for the default firehose. If undefined, all requests are logged.
-# Example: LOG_HOSE_FILTERS = '[{"url.pathname": {"startsWith": "/api/"}}]'
 # LOG_HOSE_FILTERS =
 
-# --- User-Defined Log Routing ---
-# To enable the advanced Log Routing Pipeline, create a `_userLogRoutes.mjs` file
-# in the root of your project. If that file exists and contains routes, it will
-# completely override the LOG_HOSE_TABLE and LOG_HOSE_FILTERS variables.
+# --- Optional Retention Policy for the Default Firehose ---
+LOG_HOSE_RETENTION_DAYS = 90
+LOG_HOSE_PRUNING_INTERVAL_DAYS = 1
