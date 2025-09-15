@@ -35,26 +35,38 @@ export function logRequest(request, customData, env, ctx, logPlan) {
     if (matchedRoutes.length === 0) {
         return;
     }
-    ctx.waitUntil(sendLog(request, customData, env, matchedRoutes));
+    ctx.waitUntil(sendLog(request, customData, env, logPlan, matchedRoutes));
 }
 
 /**
  * An internal async function that assembles the log data and sends it to the Durable Object.
+ * It uses a sharding strategy based on the Cloudflare colo and a time bucket to
+ * distribute the load and group logs for efficient batching.
  *
  * @private
  * @param {Request} request The incoming request.
  * @param {object} [customData] Optional custom data.
  * @param {object} env The Worker's environment bindings.
+ * @param {Array<CompiledLogRoute>} logPlan The full, compiled log plan.
  * @param {Array<CompiledLogRoute>} matchedRoutes The routes this log should be written to.
  * @returns {Promise<void>}
  */
-async function sendLog(request, customData, env, matchedRoutes) {
+async function sendLog(request, customData, env, logPlan, matchedRoutes) {
     try {
         const logData = await createLogData(request, customData, env);
-        const shardId = request.headers.get('cf-ray') || logData.logId;
-        const doName = `batcher_${shardId}`;
-        const stub = env.LOG_BATCHER.getByName(doName);
+
+        // --- Corrected Sharding Logic ---
+        const colo = logData.cfColo || 'UNKNOWN';
+        const bucketDuration = env.SHARDING_BUCKET_MS || 60000;
+        const timeBucket = Math.floor(Date.now() / bucketDuration);
+        const shardId = `${colo}-${timeBucket}`;
+
+        const stub = env.LOG_BATCHER.getByName(shardId);
+
+        // Pass the compiled log plan to the DO instance so the alarm handler can use it.
+        stub.setLogPlan(logPlan);
         stub.addLog(logData, matchedRoutes);
+
     } catch (e) {
         console.error("[LOGGING] Fatal error in sendLog:", e);
     }
