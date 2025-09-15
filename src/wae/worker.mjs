@@ -5,11 +5,11 @@
  */
 
 import {WorkerEntrypoint} from 'cloudflare:workers';
-import {logRequest, createLogData} from './logger.mjs';
-import {compileLogPlan} from './logPlanManager.mjs';
+import {logRequest, createLogData} from '../logger.mjs';
+import {compileLogPlan} from '../filter/logPlanManager.mjs';
 
 /**
- * @typedef {import('./logDO.mjs').LogBatcher} LogBatcher
+ * @typedef {import('../logDO.mjs').LogBatcher} LogBatcher
  * @typedef {import('@cloudflare/workers-types').AnalyticsEngineDataset} AnalyticsEngineDataset
  * @typedef {import('@cloudflare/workers-types').DurableObjectNamespace} DurableObjectNamespace
  * @typedef {import('@cloudflare/workers-types').D1Database} D1Database
@@ -98,4 +98,4 @@ export default class extends WorkerEntrypoint {
     }
 }
 
-export {LogBatcher} from './logDO.mjs';
+export {LogBatcher} from '../logDO.mjs';

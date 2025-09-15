@@ -8,8 +8,8 @@
  */
 
 import {DurableObject} from "cloudflare:workers";
-import {initDB} from './schemaManager.mjs';
-import {pruneTable} from './pruneRetention.mjs';
+import {initDB} from './schema/schemaManager.mjs';
+import {pruneTable} from './filter/pruneRetention.mjs';
 import {
     sendBatchWriteMetric,
     sendSchemaMigrationMetric,
@@ -25,7 +25,7 @@ import {
 } from './kv/index.mjs';
 
 /**
- * @typedef {import('./logPlanManager.mjs').CompiledLogRoute} CompiledLogRoute
+ * @typedef {import('./filter/logPlanManager.mjs').CompiledLogRoute} CompiledLogRoute
  * @typedef {import('@cloudflare/workers-types').DurableObjectState} DurableObjectState
  */
 

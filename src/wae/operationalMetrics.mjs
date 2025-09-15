@@ -7,7 +7,7 @@
 
 /**
  * @typedef {import('@cloudflare/workers-types').AnalyticsEngineDataset} AnalyticsEngineDataset
- * @typedef {import('../logPlanManager.mjs').CompiledLogRoute} CompiledLogRoute
+ * @typedef {import('../filter/logPlanManager.mjs').CompiledLogRoute} CompiledLogRoute
  */
 
 /**

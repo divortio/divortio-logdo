@@ -30,4 +30,4 @@ export function crc32(str) {
         crc = (crc >>> 8) ^ crcTable[(crc ^ str.charCodeAt(i)) & 0xFF];
     }
     return (crc ^ (-1)) >>> 0;
-};
+}

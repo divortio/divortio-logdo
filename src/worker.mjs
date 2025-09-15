@@ -6,7 +6,7 @@
 
 import {WorkerEntrypoint} from 'cloudflare:workers';
 import {logRequest, createLogData} from './logger.mjs';
-import {compileLogPlan} from './logPlanManager.mjs';
+import {compileLogPlan} from './filter/logPlanManager.mjs';
 
 // --- JSDoc Type Definitions for IDE ---
 /**
@@ -19,7 +19,7 @@ import {compileLogPlan} from './logPlanManager.mjs';
  * @typedef {import('@cloudflare/workers-types').Request} Request
  * @typedef {import('@cloudflare/workers-types').Response} Response
  * @typedef {import('@cloudflare/workers-types').ScheduledController} ScheduledController
- * @typedef {import('./logPlanManager.mjs').CompiledLogRoute} CompiledLogRoute
+ * @typedef {import('./filter/logPlanManager.mjs').CompiledLogRoute} CompiledLogRoute
  */
 
 /**

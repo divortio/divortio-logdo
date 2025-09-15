@@ -5,8 +5,6 @@
  * @module SchemaManager
  */
 
-import {tableSchema, SCHEMA_HASH} from './schema.mjs';
-
 /**
  * Initializes the database by checking the schema version and applying migrations if necessary.
  * This is the primary public function to be called by the Durable Object.
