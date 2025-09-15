@@ -4,7 +4,7 @@
  * It copies the content from `_userLogRoutes.mjs` (if it exists) at the project root
  * to `src/userLogRoutes.mjs`, where it can be statically imported by the application.
  */
-
+// sdfsdf
 import fs from 'fs';
 import path from 'path';
 
