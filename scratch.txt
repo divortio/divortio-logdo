@@ -1,1 +1,7 @@
-doNodWAE
+Batch 2 of 3: The KV Logic
+
+1. src/kv/index.mjs (New File - Contains all the dedicated functions for writing the different state objects to the KV namespace)
+
+Batch 3 of 3: The Durable Object Integration
+
+1. src/logDO.mjs (Updated to import and call the new KV functions at all the key operational points: in the alarm, on successful writes, on failed writes, and after pruning)
