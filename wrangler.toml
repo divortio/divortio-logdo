@@ -23,11 +23,15 @@ database_name = "production-logs"
 database_id = "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx" # <-- Replace with your actual D1 Database ID
 
 # ====================================================================================
-# KV Namespace Binding for State Snapshots
+# KV Namespace Bindings
 # ====================================================================================
 [[kv_namespaces]]
 binding = "LOGDO_STATE"
-id = "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx" # <-- Replace with your new KV namespace ID
+id = "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx" # <-- Replace with your state KV namespace ID
+
+[[kv_namespaces]]
+binding = "LOGDO_DEAD_LETTER"
+id = "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx" # <-- Replace with your new dead-letter KV namespace ID
 
 # ====================================================================================
 # Analytics Engine Bindings for Operational Metrics

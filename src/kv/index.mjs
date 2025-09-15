@@ -11,6 +11,7 @@
  * @typedef {import('./schema.mjs').LastBatch} LastBatch
  * @typedef {import('./schema.mjs').LastEvent} LastEvent
  * @typedef {import('./schema.mjs').LastFailedBatch} LastFailedBatch
+ * @typedef {import('./schema.mjs').DeadLetterBatch} DeadLetterBatch
  * @typedef {import('./schema.mjs').PruningSummary} PruningSummary
  * @typedef {import('./schema.mjs').PruningResult} PruningResult
  */
@@ -110,6 +111,29 @@ export async function saveFailedBatch(kv, tableName, error, batch) {
     };
     await putKV(kv, 'last_failed_batch', failureRecord);
 }
+
+/**
+ * Saves a persistently failing batch to the dead-letter queue KV for manual inspection.
+ *
+ * @param {KVNamespace} [kv] - The `LOGDO_DEAD_LETTER` KV namespace binding.
+ * @param {string} tableName - The name of the table the write failed on.
+ * @param {Error} error - The last error object from the catch block.
+ * @param {Array<object>} batch - The batch of logs that failed.
+ * @param {string} doId - The ID of the Durable Object that processed the batch.
+ */
+export async function saveDeadLetterBatch(kv, tableName, error, batch, doId) {
+    /** @type {DeadLetterBatch} */
+    const record = {
+        timestamp: new Date().toISOString(),
+        tableName,
+        error: error.message,
+        doId,
+        batch,
+    };
+    const key = `deadletter_${tableName}_${new Date().toISOString()}`;
+    await putKV(kv, key, record);
+}
+
 
 /**
  * Updates the centralized pruning summary in KV with the result of a pruning operation.

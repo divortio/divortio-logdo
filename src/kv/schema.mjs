@@ -35,6 +35,17 @@
  */
 
 /**
+ * Represents the payload for a batch that has failed repeatedly and is being moved
+ * to a dead-letter queue for manual inspection.
+ * @typedef {object} DeadLetterBatch
+ * @property {string} timestamp - An ISO 8601 timestamp of when the batch was moved to the dead-letter queue.
+ * @property {string} tableName - The name of the table the write failed on.
+ * @property {string} error - The last error message received.
+ * @property {string} doId - The ID of the Durable Object instance that processed the batch.
+ * @property {Array<object>} batch - A copy of the batch of logs that failed.
+ */
+
+/**
  * Represents a summary of the latest pruning operation for a single table.
  * @typedef {object} PruningResult
  * @property {string} lastPrunedTimestamp - An ISO 8601 timestamp of the last successful prune.

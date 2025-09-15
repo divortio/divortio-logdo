@@ -21,7 +21,8 @@ import {
     saveLastFirehoseEvent,
     saveFailedBatch,
     updatePruningSummary,
-    registerActiveDO
+    registerActiveDO,
+    saveDeadLetterBatch
 } from './kv/index.mjs';
 
 /**
@@ -36,14 +37,17 @@ import {
  * @typedef {object} Env
  * @property {D1Database} LOGGING_DB
  * @property {KVNamespace} LOGDO_STATE
+ * @property {KVNamespace} LOGDO_DEAD_LETTER
  * @property {AnalyticsEngineDataset} METRICS_BATCH_WRITES
  * @property {AnalyticsEngineDataset} METRICS_SCHEMA_MIGRATIONS
  * @property {AnalyticsEngineDataset} METRICS_DATA_PRUNING
+ * @property {string | number} [BATCH_INTERVAL_MS]
+ * @property {string | number} [MAX_BATCH_SIZE]
  * @property {string} [LOG_HOSE_TABLE]
- * @property {number} [BATCH_INTERVAL_MS]
- * @property {number} [MAX_BATCH_SIZE]
  * @property {string} [colo]
  */
+
+const MAX_RETRIES = 3;
 
 /**
  * A Durable Object class that acts as an RPC service for batching logs and handling scheduled tasks.
@@ -66,6 +70,9 @@ export class LogBatcher extends DurableObject {
     _initPromises;
     /** @private @type {Array<CompiledLogRoute> | null} */
     _logPlan = null;
+    /** @private @type {Map<string, number>} */
+    _failureCounts;
+
 
     /**
      * @param {DurableObjectState} ctx
@@ -77,8 +84,34 @@ export class LogBatcher extends DurableObject {
         this._env = env;
         this._batches = new Map();
         this._initPromises = new Map();
-        this._batchIntervalMs = this._env.BATCH_INTERVAL_MS || 10000;
-        this._maxBatchSize = this._env.MAX_BATCH_SIZE || 200;
+        this._failureCounts = new Map();
+
+        // --- Configuration Validation ---
+        const batchInterval = parseInt(this._env.BATCH_INTERVAL_MS, 10);
+        this._batchIntervalMs = !isNaN(batchInterval) && batchInterval > 0 ? batchInterval : 10000; // Default to 10s
+
+        const maxSize = parseInt(this._env.MAX_BATCH_SIZE, 10);
+        this._maxBatchSize = !isNaN(maxSize) && maxSize > 0 ? maxSize : 200; // Default to 200
+    }
+
+    /**
+     * Called by the Workers runtime before the DO is evicted from memory.
+     * This provides a final opportunity to persist any in-memory state.
+     */
+    async destructor() {
+        console.log(`[DO Destructor] DO instance ${this._ctx.id.toString()} shutting down. Flushing pending logs...`);
+        const writePromises = [];
+        if (this._logPlan) {
+            for (const [tableName, batch] of this._batches.entries()) {
+                if (batch.length > 0) {
+                    const route = this._logPlan.find(r => r.tableName === tableName);
+                    if (route) {
+                        writePromises.push(this._writeBatchToD1(route));
+                    }
+                }
+            }
+        }
+        await Promise.all(writePromises);
     }
 
     /**
@@ -127,8 +160,6 @@ export class LogBatcher extends DurableObject {
 
     /**
      * [RPC Method] Adds a log entry to the appropriate in-memory batch.
-     * Triggers an immediate batch write if the batch size exceeds the configured maximum.
-     * Also sets an alarm to ensure logs are written periodically.
      * @param {object} logData - The structured log object.
      * @param {Array<CompiledLogRoute>} matchedRoutes - The routes this log should be written to.
      * @returns {Promise<void>}
@@ -220,23 +251,17 @@ export class LogBatcher extends DurableObject {
     }
 
     /**
-     * Writes a batch of logs for a specific route to the D1 database. This method is designed
-     * to be race-condition-safe by immediately clearing the batch it intends to write.
+     * Writes a batch of logs to D1 with a retry and dead-letter queue mechanism.
      * @private
      * @param {CompiledLogRoute} route - The route for which to write the batch.
      * @returns {Promise<void>}
      */
     async _writeBatchToD1(route) {
         const {tableName, schema} = route;
-
-        // **RACE CONDITION FIX**: Immediately grab the batch to write and replace it with an empty array.
-        // This prevents new logs from being lost if `addLog` is called while this write is in progress.
         const batchToWrite = this._batches.get(tableName) || [];
-        if (batchToWrite.length === 0) {
-            return;
-        }
-        this._batches.set(tableName, []);
+        if (batchToWrite.length === 0) return;
 
+        this._batches.set(tableName, []);
         await this.initialize(route);
 
         const startTime = Date.now();
@@ -244,37 +269,35 @@ export class LogBatcher extends DurableObject {
         try {
             const columns = Object.keys(schema);
             const placeholders = columns.map(() => `?`).join(', ');
-
             const stmts = batchToWrite.map(log => {
                 const values = columns.map(col => log[col] ?? null);
-                return this._env.LOGGING_DB.prepare(
-                    `INSERT INTO ${tableName} (${columns.join(', ')}) VALUES (${placeholders})`
-                ).bind(...values);
+                return this._env.LOGGING_DB.prepare(`INSERT INTO ${tableName} (${columns.join(', ')}) VALUES (${placeholders})`).bind(...values);
             });
-
             await this._env.LOGGING_DB.batch(stmts);
             console.log(`[DO BATCHER] Successfully wrote batch of ${batchToWrite.length} logs to "${tableName}".`);
+            this._failureCounts.delete(tableName); // Reset failure count on success
 
             if (tableName === this._env.LOG_HOSE_TABLE) {
-                this._ctx.waitUntil(saveLastFirehoseBatch(this._env.LOGDO_STATE, batchToWrite).catch(err => {
-                    console.error(`[DO BATCHER] Failed to save last firehose batch:`, err);
-                }));
+                this._ctx.waitUntil(saveLastFirehoseBatch(this._env.LOGDO_STATE, batchToWrite).catch(err => console.error(`[DO BATCHER] Failed to save last firehose batch:`, err)));
                 if (batchToWrite.length > 0) {
-                    this._ctx.waitUntil(saveLastFirehoseEvent(this._env.LOGDO_STATE, batchToWrite[batchToWrite.length - 1]).catch(err => {
-                        console.error(`[DO BATCHER] Failed to save last firehose event:`, err);
-                    }));
+                    this._ctx.waitUntil(saveLastFirehoseEvent(this._env.LOGDO_STATE, batchToWrite[batchToWrite.length - 1]).catch(err => console.error(`[DO BATCHER] Failed to save last firehose event:`, err)));
                 }
             }
-
         } catch (e) {
             outcome = 'failure';
             console.error(`[DO BATCHER] D1 batch write to "${tableName}" failed:`, e);
-            this._ctx.waitUntil(saveFailedBatch(this._env.LOGDO_STATE, tableName, e, batchToWrite).catch(err => {
-                console.error(`[DO BATCHER] Failed to save failed batch details:`, err);
-            }));
-            // Retry failed logs by prepending them to the current batch.
-            const existingBatch = this._batches.get(tableName) || [];
-            this._batches.set(tableName, [...batchToWrite, ...existingBatch]);
+            this._ctx.waitUntil(saveFailedBatch(this._env.LOGDO_STATE, tableName, e, batchToWrite).catch(err => console.error(`[DO BATCHER] Failed to save failed batch details:`, err)));
+
+            const failures = (this._failureCounts.get(tableName) || 0) + 1;
+            if (failures >= MAX_RETRIES) {
+                console.error(`[DO BATCHER] Batch for table "${tableName}" has failed ${failures} times. Moving to dead-letter queue.`);
+                this._ctx.waitUntil(saveDeadLetterBatch(this._env.LOGDO_DEAD_LETTER, tableName, e, batchToWrite, this._ctx.id.toString()).catch(err => console.error(`[DO BATCHER] Failed to save dead-letter batch:`, err)));
+                this._failureCounts.delete(tableName);
+            } else {
+                this._failureCounts.set(tableName, failures);
+                const existingBatch = this._batches.get(tableName) || [];
+                this._batches.set(tableName, [...batchToWrite, ...existingBatch]);
+            }
         } finally {
             const durationMs = Date.now() - startTime;
             sendBatchWriteMetric(this._env, tableName, outcome, batchToWrite.length, durationMs);
