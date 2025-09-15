@@ -48,6 +48,8 @@ export class LogBatcher extends DurableObject {
     _maxBatchSize;
     /** @private @type {Map<string, Promise<void>>} */
     _initPromises;
+    /** @private @type {Array<CompiledLogRoute> | null} */
+    _logPlan = null;
 
     /**
      * @param {DurableObjectState} ctx
@@ -93,6 +95,15 @@ export class LogBatcher extends DurableObject {
 
         this._initPromises.set(tableName, initPromise);
         return initPromise;
+    }
+
+    /**
+     * [RPC Method] Sets the compiled log plan for this Durable Object instance.
+     * This ensures the DO has the necessary context to perform its tasks, like flushing batches.
+     * @param {Array<CompiledLogRoute>} plan The compiled log plan from the main worker.
+     */
+    setLogPlan(plan) {
+        this._logPlan = plan;
     }
 
     /**
@@ -149,11 +160,28 @@ export class LogBatcher extends DurableObject {
 
     /** @returns {Promise<void>} */
     async alarm() {
-        // The alarm is the perfect, low-frequency trigger for updating our KV state.
         const doId = this._ctx.id.toString();
         const colo = this._env.colo || 'unknown';
         this._ctx.waitUntil(updateBatcherState(this._env.LOGDO_STATE, doId, this._batches));
         this._ctx.waitUntil(registerActiveDO(this._env.LOGDO_STATE, doId, colo));
+
+        if (!this._logPlan) {
+            console.error(`[DO Alarm] Cannot flush batches: Log plan has not been set for this instance.`);
+            return;
+        }
+
+        const writePromises = [];
+        for (const [tableName, batch] of this._batches.entries()) {
+            if (batch.length > 0) {
+                const route = this._logPlan.find(r => r.tableName === tableName);
+                if (route) {
+                    writePromises.push(this._writeBatchToD1(route));
+                } else {
+                    console.error(`[DO Alarm] Could not find route for table "${tableName}" in the log plan. Batch will be retried.`);
+                }
+            }
+        }
+        await Promise.all(writePromises);
     }
 
     /**
@@ -187,7 +215,6 @@ export class LogBatcher extends DurableObject {
             await this._env.LOGGING_DB.batch(stmts);
             console.log(`[DO BATCHER] Successfully wrote batch of ${batchToWrite.length} logs to "${tableName}".`);
 
-            // If this write was for the main firehose table, save it to KV for debugging.
             if (tableName === this._env.LOG_HOSE_TABLE) {
                 this._ctx.waitUntil(saveLastFirehoseBatch(this._env.LOGDO_STATE, batchToWrite));
                 if (batchToWrite.length > 0) {

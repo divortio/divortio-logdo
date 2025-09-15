@@ -24,19 +24,19 @@ import {compileLogPlan} from './filter/logPlanManager.mjs';
 
 /**
  * @typedef {object} Env
- * @property {DurableObjectNamespace<LogBatcher>} LOG_BATCHER - Binding to the LogBatcher Durable Object.
- * @property {D1Database} LOGGING_DB - Binding to the D1 database.
- * @property {KVNamespace} LOGDO_STATE - Binding to the KV namespace for state snapshots.
- * @property {AnalyticsEngineDataset} METRICS_BATCH_WRITES - WAE dataset for batch write operations.
- * @property {AnalyticsEngineDataset} METRICS_SCHEMA_MIGRATIONS - WAE dataset for schema migration events.
- * @property {AnalyticsEngineDataset} METRICS_DATA_PRUNING - WAE dataset for data pruning operations.
- * @property {string} [LOG_HOSE_TABLE] - The table name for the default firehose.
- * @property {string} [LOG_HOSE_FILTERS] - Optional filters for the default firehose.
- * @property {number} [LOG_HOSE_RETENTION_DAYS] - Optional retention period for the firehose.
- * @property {number} [LOG_HOSE_PRUNING_INTERVAL_DAYS] - Optional pruning interval for the firehose.
- * @property {number} [BATCH_INTERVAL_MS] - The interval for batching logs.
- * @property {number} [MAX_BATCH_SIZE] - The maximum size of a log batch.
- * @property {number} [MAX_BODY_SIZE] - The maximum size of a request body to log.
+ * @property {DurableObjectNamespace<LogBatcher>} LOG_BATCHER
+ * @property {D1Database} LOGGING_DB
+ * @property {KVNamespace} LOGDO_STATE
+ * @property {AnalyticsEngineDataset} METRICS_BATCH_WRITES
+ * @property {AnalyticsEngineDataset} METRICS_SCHEMA_MIGRATIONS
+ * @property {AnalyticsEngineDataset} METRICS_DATA_PRUNING
+ * @property {string} [LOG_HOSE_TABLE]
+ * @property {string} [LOG_HOSE_FILTERS]
+ * @property {number} [LOG_HOSE_RETENTION_DAYS]
+ * @property {number} [LOG_HOSE_PRUNING_INTERVAL_DAYS]
+ * @property {number} [BATCH_INTERVAL_MS]
+ * @property {number} [MAX_BATCH_SIZE]
+ * @property {number} [MAX_BODY_SIZE]
  */
 
 export default class extends WorkerEntrypoint {
@@ -98,6 +98,9 @@ export default class extends WorkerEntrypoint {
             if (route.retentionDays && route.pruningIntervalDays) {
                 const doName = `pruner_${route.tableName}`;
                 const stub = env.LOG_BATCHER.getByName(doName);
+
+                // Ensure the pruner DO has the log plan before running its check.
+                ctx.waitUntil(stub.setLogPlan(logPlan));
                 ctx.waitUntil(stub.runRetentionCheck(route));
             }
         }
