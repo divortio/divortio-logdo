@@ -1,7 +1,12 @@
-Batch 2 of 3: The KV Logic
+1-architecture.md: This will provide a high-level overview of the system, including the request flow from a parent worker to the Durable Object and into the D1 database. It will feature a Mermaid diagram to visualize the architecture.
 
-1. src/kv/index.mjs (New File - Contains all the dedicated functions for writing the different state objects to the KV namespace)
+2-setup-and-deployment.md: This page will be a comprehensive guide to getting the service running. It will cover creating the D1 database, setting up the required KV namespaces, configuring the wrangler.toml file, and deploying the worker.
 
-Batch 3 of 3: The Durable Object Integration
+3-data-schema.md: This page will document every field collected by the logger, corresponding to the master schema in src/schema/schema.mjs. It will include the field name, data type, and a clear description of its purpose.
 
-1. src/logDO.mjs (Updated to import and call the new KV functions at all the key operational points: in the alarm, on successful writes, on failed writes, and after pruning)
+4-routing-and-filtering.md: This will explain how to use the log routing pipeline. It will detail the process of defining custom routes in _userLogRoutes.mjs, including how to filter requests, select specific columns, and set retention policies.
+
+5-durable-object.md: This document will explain the core logic of the LogBatcher Durable Object. It will cover its key responsibilities, such as in-memory batching, schema management, data pruning, the dead-letter queue, and the graceful shutdown mechanism.
+
+6-observability.md: This will cover the monitoring and debugging features. It will explain how to use the state snapshots in the LOGDO_STATE KV namespace, how to inspect the LOGDO_DEAD_LETTER queue, and what metrics are sent to the Workers Analytics Engine.
+
