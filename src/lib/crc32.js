@@ -1,9 +1,17 @@
 /**
  * @file src/lib/crc32.js
  * @description A standard JavaScript implementation of the CRC32 hashing algorithm.
- * This ensures consistency with the crc32 function used in Cloudflare Transform Rules.
+ * This implementation conforms to the CRC-32/ISO-HDLC standard, which uses a
+ * polynomial of 0xEDB88320. This ensures consistency with the `crc32()` function
+ * available in Cloudflare Transform Rules and other common systems.
+ * @module CRC32
  */
 
+/**
+ * Generates the CRC table for the polynomial. This is done once on module load.
+ * @private
+ * @returns {Array<number>} The CRC lookup table.
+ */
 function makeCRCTable() {
     let c;
     const crcTable = [];
@@ -20,7 +28,7 @@ function makeCRCTable() {
 const crcTable = makeCRCTable();
 
 /**
- * Calculates the CRC32 hash of a string.
+ * Calculates the CRC32 hash of a given string.
  * @param {string} str The string to hash.
  * @returns {number} The 32-bit unsigned integer hash.
  */
